@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { auth, signOut } from "@/auth";
+import { HeaderDrawer } from "@/components/site/header-drawer";
 
 export function SiteHeader({
   items,
@@ -9,48 +10,70 @@ export function SiteHeader({
   businessName: string;
 }) {
   return (
-    <header className="sticky top-0 z-40 border-b border-foreground/10 bg-background/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4">
-        <Link href="/" className="font-[family-name:var(--font-display)] text-2xl tracking-tight">
-          {businessName}
-        </Link>
-        <nav className="hidden items-center gap-5 text-sm md:flex">
-          {items.map((item) => (
-            <Link key={item.href} href={item.href} className="hover:text-primary">
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-        <AuthLinks />
-      </div>
-      <nav className="flex gap-4 overflow-x-auto px-4 pb-3 text-sm md:hidden">
-        {items.map((item) => (
-          <Link key={item.href} href={item.href} className="shrink-0">
-            {item.label}
+    <>
+      <header className="sticky top-0 z-40 border-b border-foreground/10 bg-background/90 backdrop-blur">
+        <div className="mx-auto flex h-20 max-w-6xl items-center justify-between gap-4 px-4">
+          <Link href="/" className="shrink-0">
+            <img src="/logo_main.png" alt={businessName} className="h-14 w-14 object-contain lg:h-16 lg:w-16" />
           </Link>
-        ))}
-      </nav>
-    </header>
+          <nav className="hidden items-center gap-6 text-base font-semibold lg:flex">
+            {items.map((item) => (
+              <Link key={item.href} href={item.href} className="hover:text-primary">
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+          <div className="hidden lg:block">
+            <AuthLinks />
+          </div>
+          <HeaderDrawer items={items}>
+            <AuthLinks stacked />
+          </HeaderDrawer>
+        </div>
+      </header>
+      <img src="/banner.jpg" alt="BoxS. Subscriptions with room to change your mind." className="block w-full" />
+    </>
   );
 }
 
-async function AuthLinks() {
+async function AuthLinks({ stacked = false }: { stacked?: boolean }) {
   const session = await auth();
+  if (!stacked) {
+    if (!session?.user) {
+      return (
+        <div className="flex items-center gap-3 text-base font-semibold">
+          <Link href="/login" className="rounded-full px-3 py-2">Sign in</Link>
+          <Link href="/plans" className="rounded-full bg-primary px-4 py-2 text-primary-foreground">See plans</Link>
+        </div>
+      );
+    }
+    const admin = session.user.role !== "customer";
+    return (
+      <div className="flex items-center gap-3 text-base font-semibold">
+        {admin ? <Link href="/admin" className="rounded-full px-3 py-2">Admin</Link> : null}
+        <Link href="/account" className="rounded-full px-3 py-2">Account</Link>
+        <form action={async () => { "use server"; await signOut({ redirectTo: "/" }); }}>
+          <button className="rounded-full px-3 py-2" type="submit">Sign out</button>
+        </form>
+      </div>
+    );
+  }
+  const itemClass = "py-3 text-left text-base font-semibold hover:text-primary";
   if (!session?.user) {
     return (
-      <div className="flex items-center gap-2 text-sm">
-        <Link href="/login" className="rounded-full px-3 py-2">Sign in</Link>
-        <Link href="/plans" className="rounded-full bg-primary px-4 py-2 text-primary-foreground">See plans</Link>
+      <div className="flex flex-col">
+        <Link href="/login" className={itemClass}>Sign in</Link>
+        <Link href="/plans" className={itemClass}>See plans</Link>
       </div>
     );
   }
   const admin = session.user.role !== "customer";
   return (
-    <div className="flex items-center gap-2 text-sm">
-      {admin ? <Link href="/admin" className="rounded-full px-3 py-2">Admin</Link> : null}
-      <Link href="/account" className="rounded-full px-3 py-2">Account</Link>
+    <div className="flex flex-col">
+      {admin ? <Link href="/admin" className={itemClass}>Admin</Link> : null}
+      <Link href="/account" className={itemClass}>Account</Link>
       <form action={async () => { "use server"; await signOut({ redirectTo: "/" }); }}>
-        <button className="rounded-full px-3 py-2" type="submit">Sign out</button>
+        <button className={itemClass} type="submit">Sign out</button>
       </form>
     </div>
   );
