@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { SubscribeWizard } from "@/components/store/subscribe-wizard";
+import { quoteSubscription } from "@/modules/checkout/checkout-service";
 import { billing } from "@/repositories/billing";
 import { catalog } from "@/repositories/catalog";
 import { plans } from "@/repositories/plans";
@@ -31,10 +32,13 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
   const plan = await plans.bySlug(slug);
   if (!plan || plan.status !== "PUBLISHED") notFound();
   const [zones, addons] = await Promise.all([billing.zones(), catalog.addons({ pageSize: 20 })]);
+  const optionIds = plan.groups.map((group) => group.options.find((option) => option.isDefault)?.id ?? group.options[0]?.id).filter((id): id is string => Boolean(id));
+  const quoted = await quoteSubscription({ planId: plan.id, optionIds, zoneId: zones[0]?.id ?? null }).catch(() => null);
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
       <SubscribeWizard
         plan={plan}
+        initialQuote={quoted ? { price: quoted.price, equivalents: quoted.equivalents } : null}
         zones={zones.map((zone) => ({ id: zone.id, name: zone.name, city: zone.city, feeCents: zone.feeCents, schedules: zone.schedules }))}
         addons={addons.items}
       />

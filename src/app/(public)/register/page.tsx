@@ -9,6 +9,7 @@ export default function RegisterPage() {
   return (
     <form
       className="mx-auto max-w-md px-4 py-16"
+      method="post"
       onSubmit={async (event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);

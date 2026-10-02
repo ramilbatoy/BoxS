@@ -19,7 +19,22 @@ type Zone = {
 
 const steps = ["Goal", "Plan", "Duration", "Options", "Delivery", "Address", "Review", "Payment", "Done"];
 
-export function SubscribeWizard({ plan, zones, addons }: { plan: PlanDTO; zones: Zone[]; addons: AddonDTO[] }) {
+type QuoteView = {
+  price: { totalCents: number; lines: { label: string; amountCents: number }[] };
+  equivalents?: { dailyCents: number };
+};
+
+export function SubscribeWizard({
+  plan,
+  zones,
+  addons,
+  initialQuote,
+}: {
+  plan: PlanDTO;
+  zones: Zone[];
+  addons: AddonDTO[];
+  initialQuote?: QuoteView | null;
+}) {
   const defaults = plan.groups.map((group) => group.options.find((option) => option.isDefault)?.id ?? group.options[0]?.id).filter((id): id is string => Boolean(id));
   const [step, setStep] = useState(0);
   const [optionIds, setOptionIds] = useState<string[]>(defaults);
@@ -40,6 +55,7 @@ export function SubscribeWizard({ plan, zones, addons }: { plan: PlanDTO; zones:
   const zone = zones.find((item) => item.id === zoneId);
   const quote = useQuery({
     queryKey: ["quote", plan.id, optionIds, addonIds, zoneId, couponCode],
+    placeholderData: initialQuote ?? undefined,
     queryFn: async () => {
       const response = await fetch("/api/v1/pricing/quote", {
         method: "POST",
@@ -187,7 +203,8 @@ export function SubscribeWizard({ plan, zones, addons }: { plan: PlanDTO; zones:
       </div>
       <aside className="h-fit rounded-3xl bg-[#1c1915] p-5 text-[#f6f1e7] lg:sticky lg:top-24">
         <p className="text-sm text-[#f6f1e7]/70">Live total</p>
-        <p className="mt-2 font-[family-name:var(--font-display)] text-4xl">{total != null ? formatMoney(total, plan.currency) : "…"}</p>
+        <p className="mt-2 font-[family-name:var(--font-display)] text-4xl">{total != null ? formatMoney(total, plan.currency) : quote.isError ? "—" : "…"}</p>
+        {quote.isError ? <p className="mt-2 text-sm text-red-200">{quote.error.message}</p> : null}
         <ul className="mt-4 space-y-2 text-sm">
           {summary.map((line: { label: string; amountCents: number }) => (
             <li key={line.label} className="flex justify-between"><span>{line.label}</span><span>{formatMoney(line.amountCents, plan.currency)}</span></li>
