@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.env
+.env.local
+public/uploads/*
+!public/uploads/.gitkeep
+src/generated
+coverage
+*.md
+!README.md

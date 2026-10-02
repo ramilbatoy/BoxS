@@ -1,0 +1,58 @@
+services:
+  subscription_platform_app:
+    container_name: subscription_platform_app
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    hostname: subscription_platform_app
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: mysql://subscription_user:subscription_pass@mysql:3306/subscription_db
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      AUTH_URL: http://localhost:${APP_PORT:-3017}
+      NEXTAUTH_URL: http://localhost:${APP_PORT:-3017}
+      NEXT_PUBLIC_APP_URL: http://localhost:${APP_PORT:-3017}
+    ports:
+      - "${APP_PORT:-3017}:3000"
+    depends_on:
+      subscription_platform_mysql:
+        condition: service_healthy
+    networks:
+      - subscription_platform_network
+    restart: unless-stopped
+
+  subscription_platform_mysql:
+    image: mysql:8.4
+    container_name: subscription_platform_mysql
+    hostname: mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-subscription_db}
+      MYSQL_USER: ${MYSQL_USER:-subscription_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-subscription_pass}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-subscription_root}
+    ports:
+      - "${MYSQL_PORT:-3317}:3306"
+    volumes:
+      - subscription_platform_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-usubscription_user", "-psubscription_pass"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+    networks:
+      - subscription_platform_network
+
+networks:
+  subscription_platform_network:
+    name: subscription_platform_network
+
+volumes:
+  subscription_platform_mysql_data:
+    name: subscription_platform_mysql_data
