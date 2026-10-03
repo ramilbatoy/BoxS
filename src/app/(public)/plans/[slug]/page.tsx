@@ -6,6 +6,11 @@ import { plans } from "@/repositories/plans";
 import { billing } from "@/repositories/billing";
 import { catalog } from "@/repositories/catalog";
 
+// JSON.stringify leaves `<` intact, so a plan name could close the ld+json script tag.
+function serializeJsonLd(value: unknown) {
+  return JSON.stringify(value).replace(/[<>&]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const plan = await plans.bySlug((await params).slug);
   if (!plan) return { title: "Plan" };
@@ -32,7 +37,7 @@ export default async function PlanPage({ params }: { params: Promise<{ slug: str
   };
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }} />
       <SubscribeWizard plan={plan} initialQuote={quoted ? { price: quoted.price, equivalents: quoted.equivalents } : null} zones={zones.map((zone) => ({ id: zone.id, name: zone.name, city: zone.city, feeCents: zone.feeCents, schedules: zone.schedules }))} addons={addons.items} />
     </div>
   );
