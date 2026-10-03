@@ -17,6 +17,16 @@ import { pesosToCents } from "@/lib/money";
 
 type SessionUser = { id: string; role: string; permissions: string[]; email?: string | null; name?: string | null };
 
+const STAFF_ONLY_SUBSCRIPTION_ACTIONS = new Set(["renew"]);
+
+const EXPORT_PERMISSIONS: Record<string, string> = {
+  customers: "customers.view",
+  orders: "orders.view",
+  subscriptions: "subscriptions.view",
+  products: "products.view",
+  plans: "plans.view",
+};
+
 function ok(data: unknown, status = 200) {
   return NextResponse.json({ success: true, data }, { status });
 }
@@ -168,7 +178,10 @@ export async function handleApi(method: string, request: Request, slug: string[]
       await catalog.removeAddon(id);
       return ok({ deleted: true });
     }
-    if (resource === "subscription-types" && method === "GET") return ok(await catalog.subscriptionTypes());
+    if (resource === "subscription-types" && method === "GET") {
+      requirePermission(user, "plans.view");
+      return ok(await catalog.subscriptionTypes());
+    }
     if (resource === "subscription-types" && method === "POST") {
       requirePermission(user, "plans.create");
       return ok(await catalog.saveSubscriptionType(body), 201);
@@ -202,6 +215,10 @@ export async function handleApi(method: string, request: Request, slug: string[]
       if (!subscription) throw new AppError("SUBSCRIPTION_NOT_FOUND", "That subscription could not be found.", 404);
       const staff = can(actor.permissions, "subscriptions.edit", actor.role);
       if (!staff && subscription.userId !== actor.id) throw new AppError("FORBIDDEN", "You do not have permission to do that.", 403);
+      // Renewal moves the paid period forward and charges the provider, so it is a staff action.
+      if (!staff && STAFF_ONLY_SUBSCRIPTION_ACTIONS.has(String(body.action))) {
+        throw new AppError("FORBIDDEN", "You do not have permission to do that.", 403);
+      }
       return ok(await actOnSubscription({ ...body, id, actorId: actor.id }));
     }
     if (resource === "subscriptions" && id && method === "GET") {
@@ -225,7 +242,18 @@ export async function handleApi(method: string, request: Request, slug: string[]
       const status = body.action === "confirm" ? "CONFIRMED" : body.action === "delivered" ? "DELIVERED" : body.action === "preparing" ? "PREPARING" : "CANCELLED";
       return ok({ count: await billing.setOrderStatus(body.ids ?? [], status) });
     }
-    if (resource === "orders" && id && method === "GET") return ok(await billing.order(id));
+    if (resource === "orders" && id && method === "GET") {
+      const actor = requireUser(user);
+      const order = await billing.order(id);
+      if (!order) throw new AppError("ORDER_NOT_FOUND", "That order could not be found.", 404);
+      if (!can(actor.permissions, "orders.view", actor.role)) {
+        const customer = await billing.customerByUser(actor.id);
+        if (!customer || order.customerId !== customer.id) {
+          throw new AppError("FORBIDDEN", "You do not have permission to do that.", 403);
+        }
+      }
+      return ok(order);
+    }
     if (resource === "orders" && id && method === "PATCH") {
       requirePermission(user, "orders.edit");
       await billing.setOrderStatus([id], body.status);
@@ -263,7 +291,10 @@ export async function handleApi(method: string, request: Request, slug: string[]
       return ok(await billing.deliveries(query));
     }
 
-    if (resource === "coupons" && method === "GET") return ok(await billing.coupons(query));
+    if (resource === "coupons" && method === "GET") {
+      requirePermission(user, "coupons.view");
+      return ok(await billing.coupons(query));
+    }
     if (resource === "coupons" && method === "POST") {
       requirePermission(user, "coupons.edit");
       return ok(await billing.saveCoupon(body), 201);
@@ -322,7 +353,13 @@ export async function handleApi(method: string, request: Request, slug: string[]
       return ok(await billing.saveAddress(customer.id, body), 201);
     }
     if (resource === "account" && id === "addresses" && extra && method === "DELETE") {
-      requireUser(user);
+      const actor = requireUser(user);
+      const customer = await billing.customerByUser(actor.id);
+      if (!customer) throw new AppError("INVALID_CUSTOMER", "Customer profile not found.", 404);
+      const owned = await billing.addresses(customer.id);
+      if (!owned.some((address) => address.id === extra)) {
+        throw new AppError("FORBIDDEN", "You do not have permission to do that.", 403);
+      }
       await billing.removeAddress(extra);
       return ok({ deleted: true });
     }
@@ -373,7 +410,7 @@ export async function handleApi(method: string, request: Request, slug: string[]
       return ok(await system.overview(dates.from, dates.to));
     }
     if (resource === "search" && method === "GET") {
-      requireUser(user);
+      requirePermission(user, "customers.view");
       return ok(await system.search(query.q ?? ""));
     }
     if (resource === "users" && method === "GET") {
@@ -396,7 +433,10 @@ export async function handleApi(method: string, request: Request, slug: string[]
       await system.updateUser(id, { name: body.name, status: body.status, role: body.roleId ? { connect: { id: body.roleId } } : undefined });
       return ok({ updated: true });
     }
-    if (resource === "roles" && method === "GET") return ok(await system.roles());
+    if (resource === "roles" && method === "GET") {
+      requirePermission(user, "users.view");
+      return ok(await system.roles());
+    }
     if (resource === "roles" && method === "POST") {
       requirePermission(user, "users.create");
       return ok(await system.saveRole(body), 201);
@@ -405,14 +445,23 @@ export async function handleApi(method: string, request: Request, slug: string[]
       requirePermission(user, "users.edit");
       return ok(await system.saveRole(body, id));
     }
-    if (resource === "permissions" && method === "GET") return ok(await system.permissions());
-    if (resource === "settings" && method === "GET") return ok(await system.settings());
+    if (resource === "permissions" && method === "GET") {
+      requirePermission(user, "users.view");
+      return ok(await system.permissions());
+    }
+    if (resource === "settings" && method === "GET") {
+      requirePermission(user, "settings.manage");
+      return ok(await system.settings());
+    }
     if (resource === "settings" && method === "PATCH") {
       requirePermission(user, "settings.manage");
       await system.updateSettings(body.entries ?? []);
       return ok({ updated: true });
     }
-    if (resource === "feature-flags" && method === "GET") return ok(await system.flags());
+    if (resource === "feature-flags" && method === "GET") {
+      requirePermission(user, "settings.manage");
+      return ok(await system.flags());
+    }
     if (resource === "feature-flags" && method === "PATCH") {
       requirePermission(user, "settings.manage");
       await system.updateFlags(body.entries ?? []);
@@ -475,7 +524,9 @@ export async function handleApi(method: string, request: Request, slug: string[]
     }
     if (resource === "contact" && method === "POST") return ok(await system.contact(body), 201);
     if (resource === "exports" && id && method === "GET") {
-      requireUser(user);
+      const permission = EXPORT_PERMISSIONS[id];
+      if (!permission) throw new AppError("NOT_FOUND", "That API endpoint does not exist.", 404);
+      requirePermission(user, permission);
       const rows =
         id === "customers" ? (await billing.customers({ pageSize: 100 })).items :
         id === "orders" ? (await billing.orders({ pageSize: 100 })).items :
