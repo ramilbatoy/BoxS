@@ -26,7 +26,6 @@ export function ModuleForms({ module, onCreated }: { module: string; onCreated: 
   if (module === "faqs") return <FaqForm onCreated={onCreated} />;
   if (module === "menus") return <MenuForm />;
   if (module === "notifications") return <TemplateToggles />;
-  if (module === "api") return <ApiKeyForm onCreated={onCreated} />;
   if (["categories", "addons", "coupons", "products"].includes(module)) return <CatalogForm module={module} onCreated={onCreated} />;
   return null;
 }
@@ -503,7 +502,7 @@ function TemplateToggles() {
   return (
     <div className="mt-4 rounded-2xl bg-white p-4 ring-1 ring-black/5">
       <h2 className="font-medium">Channels</h2>
-      <p className="mt-1 text-xs text-muted-foreground">Email, SMS, and push stay off until a provider is connected. In-app notices are stored for the customer.</p>
+      <p className="mt-1 text-xs text-muted-foreground">In-app notices are stored for the customer. Email and SMS stay hidden until a provider is configured.</p>
       <ul className="mt-3 space-y-2 text-sm">
         {templates.map((template) => (
           <li key={template.id} className="flex items-center justify-between gap-3">
@@ -527,31 +526,3 @@ function TemplateToggles() {
   );
 }
 
-function ApiKeyForm({ onCreated }: { onCreated: () => void }) {
-  const [secret, setSecret] = useState("");
-  return (
-    <form
-      className="mt-4 rounded-2xl bg-white p-4 ring-1 ring-black/5"
-      onSubmit={async (event) => {
-        event.preventDefault();
-        const data = new FormData(event.currentTarget);
-        try {
-          const created = await postJson("/api/v1/api-keys", { name: data.get("name") });
-          setSecret(created.secret);
-          toast.success("Key created. Copy it now — it will not be shown again.");
-          event.currentTarget.reset();
-          onCreated();
-        } catch (error) {
-          toast.error(error instanceof Error ? error.message : "Could not create a key.");
-        }
-      }}
-    >
-      <h2 className="font-medium">New API key</h2>
-      <div className="mt-3 grid gap-2">
-        <input name="name" placeholder="Name, such as Warehouse" className={field} required />
-        <button className="h-11 rounded-full bg-[#1f6b56] text-white">Create key</button>
-        {secret ? <p className="break-all rounded-xl bg-[#f6f1e7] p-3 text-sm">{secret}</p> : null}
-      </div>
-    </form>
-  );
-}

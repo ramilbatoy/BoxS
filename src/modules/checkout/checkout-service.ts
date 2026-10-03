@@ -1,5 +1,5 @@
 import { AppError } from "@/lib/errors";
-import { calculatePrice, equivalentPrices, type PriceBreakdown } from "@/modules/pricing/pricing-service";
+import { calculatePrice, equivalentPrices, merchandiseSubtotalCents, type PriceBreakdown } from "@/modules/pricing/pricing-service";
 import { evaluateCoupon } from "@/modules/coupons/coupon-service";
 import { assertPlanSelection } from "@/modules/plans/selection";
 import { isDeliveryDateAvailable } from "@/modules/delivery/availability";
@@ -70,6 +70,7 @@ export async function quoteSubscription(input: {
   const zones = await billing.zones();
   const zone = zones.find((item) => item.id === input.zoneId);
   const deliveryFeeCents = zone ? zone.feeCents : plan.deliveryFeeCents;
+  const addonCents = addons.reduce((sum, addon) => sum + addon.priceCents, 0);
   let coupon: { type: "PERCENT" | "FIXED"; value: number } | null = null;
   let couponId: string | null = null;
   if (input.couponCode) {
@@ -80,7 +81,11 @@ export async function quoteSubscription(input: {
     if (!record) throw new AppError("COUPON_NOT_FOUND", "That coupon code was not found.");
     const usage = await billing.couponUsage(record.id, input.customerId ?? "none");
     const priorOrders = input.customerId ? await billing.customerOrderCount(input.customerId) : 0;
-    const subtotal = plan.basePriceCents + variantDeltaCents + addons.reduce((sum, addon) => sum + addon.priceCents, 0);
+    const subtotal = merchandiseSubtotalCents({
+      basePriceCents: plan.basePriceCents,
+      variantDeltaCents,
+      addonCents,
+    });
     const decision = evaluateCoupon(
       {
         code: record.code,
@@ -114,7 +119,7 @@ export async function quoteSubscription(input: {
   const price = calculatePrice({
     basePriceCents: plan.basePriceCents,
     variantDeltaCents,
-    addonCents: addons.reduce((sum, addon) => sum + addon.priceCents, 0),
+    addonCents,
     deliveryFeeCents,
     taxRateBps: plan.taxRateBps,
     discountCents: plan.discountCents,

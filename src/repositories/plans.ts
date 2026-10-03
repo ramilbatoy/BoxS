@@ -170,6 +170,11 @@ function childData(input: PlanWrite) {
   };
 }
 
+export function nextPublishedVersion(status: string, currentVersion: number) {
+  if (status !== "PUBLISHED") return null;
+  return currentVersion + 1;
+}
+
 export const plans = {
   async list(query: ListQuery = {}, publishedOnly = false): Promise<Page<PlanDTO>> {
     const page = paging(query);
@@ -196,6 +201,12 @@ export const plans = {
   },
   async save(input: PlanWrite, id?: string) {
     try {
+      const prior = id
+        ? await prisma.plan.findFirst({
+            where: { id, deletedAt: null },
+            select: { status: true, currentVersion: true },
+          })
+        : null;
       const data = {
         name: input.name,
         slug: input.slug || slugify(input.name),
@@ -251,7 +262,18 @@ export const plans = {
         }
         return saved.id;
       });
-      return this.get(plan);
+      const saved = await this.get(plan);
+      const version = saved && prior ? nextPublishedVersion(prior.status, prior.currentVersion) : null;
+      if (!saved || version == null) return saved;
+      await prisma.planVersion.create({
+        data: {
+          planId: saved.id,
+          version,
+          snapshot: { ...saved, currentVersion: version } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await prisma.plan.update({ where: { id: saved.id }, data: { currentVersion: version } });
+      return this.get(saved.id);
     } catch (error) {
       rethrow(error);
     }

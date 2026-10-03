@@ -5,6 +5,7 @@ import {
   changePlan,
   pauseSubscription,
   proratePlanChange,
+  renewalIsDue,
   renewSubscription,
   resumeSubscription,
   skipDelivery,
@@ -39,6 +40,7 @@ function state(overrides: Partial<SubscriptionState> = {}): SubscriptionState {
     remainingDeliveries: 7,
     rules,
     startedAt: start,
+    pausedAt: null,
     ...overrides,
   };
 }
@@ -62,6 +64,19 @@ describe("subscription engine", () => {
     if (!paused.ok) return;
     const resumed = resumeSubscription(paused.state, new Date("2026-10-03T00:00:00.000Z"));
     expect(resumed.ok && resumed.state.status).toBe("ACTIVE");
+  });
+
+  it("extends the term by the paused duration", () => {
+    const current = state();
+    const paused = pauseSubscription(current, new Date("2026-10-02T00:00:00.000Z"));
+    expect(paused.ok && paused.state.periodEnd.toISOString()).toBe("2026-10-08T00:00:00.000Z");
+    if (!paused.ok) return;
+    const resumed = resumeSubscription(paused.state, new Date("2026-10-05T00:00:00.000Z"));
+    expect(resumed.ok && resumed.state.status).toBe("ACTIVE");
+    if (!resumed.ok) return;
+    expect(resumed.state.periodEnd.toISOString()).toBe("2026-10-11T00:00:00.000Z");
+    expect(resumed.state.nextDeliveryAt?.toISOString()).toBe("2026-10-08T00:00:00.000Z");
+    expect(resumed.state.pausedAt).toBeNull();
   });
 
   it("blocks pause when the plan rule disallows it", () => {
@@ -129,17 +144,43 @@ describe("subscription engine", () => {
     expect(proration.leftoverCreditCents).toBe(10_000);
   });
 
-  it("renews a monthly subscription and records a failed renewal", () => {
+  it("renews a monthly subscription only after payment", () => {
+    const now = new Date("2026-11-01T00:00:00.000Z");
     const current = state({
       billingMode: "RECURRING",
       intervalUnit: "MONTH",
       intervalCount: 1,
-      nextBillingAt: new Date("2026-11-01T00:00:00.000Z"),
-      periodEnd: new Date("2026-11-01T00:00:00.000Z"),
+      nextBillingAt: now,
+      periodEnd: now,
     });
-    const renewed = renewSubscription(current, new Date("2026-11-01T00:00:00.000Z"), true);
+    const renewed = renewSubscription(current, now, true);
     expect(renewed.ok && renewed.event).toBe("SUBSCRIPTION_RENEWED");
-    const failed = renewSubscription(current, new Date("2026-11-01T00:00:00.000Z"), false);
+    if (!renewed.ok) return;
+    expect(renewed.state.periodEnd.toISOString()).toBe("2026-12-01T00:00:00.000Z");
+    expect(renewalIsDue(renewed.state, now)).toBe(false);
+    const repeated = renewSubscription(renewed.state, now, true);
+    expect(repeated.ok).toBe(false);
+    if (!repeated.ok) expect(repeated.code).toBe("NOT_DUE");
+    expect(current.periodEnd.toISOString()).toBe(now.toISOString());
+  });
+
+  it("does not add time when renewal payment fails, even if repeated", () => {
+    const now = new Date("2026-11-01T00:00:00.000Z");
+    const current = state({
+      billingMode: "RECURRING",
+      intervalUnit: "MONTH",
+      intervalCount: 1,
+      nextBillingAt: now,
+      periodEnd: now,
+    });
+    const failed = renewSubscription(current, now, false);
     expect(failed.ok && failed.state.status).toBe("PAST_DUE");
+    if (!failed.ok) return;
+    expect(failed.state.periodEnd.toISOString()).toBe(now.toISOString());
+    expect(failed.state.nextBillingAt?.toISOString()).toBe(now.toISOString());
+    const again = renewSubscription(failed.state, now, false);
+    expect(again.ok && again.state.status).toBe("PAST_DUE");
+    if (!again.ok) return;
+    expect(again.state.periodEnd.toISOString()).toBe(now.toISOString());
   });
 });

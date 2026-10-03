@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "../src/database/client";
+import { shouldSeedDemo } from "../src/lib/demo-seed";
 import { PERMISSIONS, ROLE_PRESETS } from "../src/modules/auth/permissions";
 import { checkout } from "../src/modules/checkout/checkout-service";
 
@@ -7,6 +8,10 @@ const demoPassword = "DemoAdmin123!";
 const customerPassword = "DemoCustomer123!";
 
 async function main() {
+  if (!shouldSeedDemo()) {
+    console.log("Skipping demo seed.");
+    return;
+  }
   const already = await prisma.user.findUnique({ where: { email: "admin@boxs.demo" } });
   if (already) {
     console.log("Demo data already exists.");

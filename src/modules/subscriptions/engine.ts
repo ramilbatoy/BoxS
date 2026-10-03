@@ -49,6 +49,7 @@ export type SubscriptionState = {
   remainingDeliveries: number | null;
   rules: SubscriptionRules;
   startedAt: Date;
+  pausedAt: Date | null;
 };
 
 export type EngineResult<T> =
@@ -87,7 +88,7 @@ export function pauseSubscription(state: SubscriptionState, now: Date): EngineRe
   }
   return {
     ok: true,
-    state: { ...state, status: "PAUSED", pausedAt: now } as SubscriptionState & { pausedAt?: Date },
+    state: { ...state, status: "PAUSED", pausedAt: now },
     event: "SUBSCRIPTION_PAUSED",
     message: "Subscription paused",
     data: { pausedAt: now },
@@ -98,15 +99,18 @@ export function resumeSubscription(state: SubscriptionState, now: Date): EngineR
   if (state.status !== "PAUSED") {
     return { ok: false, code: "INVALID_STATUS", message: "Only a paused subscription can be resumed." };
   }
-  const pausedMs = state.periodEnd.getTime() - now.getTime();
-  const periodEnd = pausedMs > 0 ? state.periodEnd : addInterval(now, state.intervalUnit, state.intervalCount);
+  const pausedMs = Math.max(0, now.getTime() - (state.pausedAt?.getTime() ?? now.getTime()));
+  const periodEnd = new Date(state.periodEnd.getTime() + pausedMs);
+  const nextDeliveryAt = state.nextDeliveryAt ? new Date(state.nextDeliveryAt.getTime() + pausedMs) : null;
   return {
     ok: true,
     state: {
       ...state,
       status: "ACTIVE",
+      pausedAt: null,
       periodEnd,
-      nextBillingAt: state.billingMode === "RECURRING" ? periodEnd : null,
+      nextDeliveryAt,
+      nextBillingAt: state.billingMode === "RECURRING" ? periodEnd : state.nextBillingAt,
     },
     event: "SUBSCRIPTION_RESUMED",
     message: "Subscription resumed",
@@ -292,6 +296,13 @@ export function changePlan(
   };
 }
 
+export function renewalIsDue(state: SubscriptionState, now: Date) {
+  if (state.billingMode !== "RECURRING") return false;
+  if (state.status !== "ACTIVE" && state.status !== "PAST_DUE") return false;
+  const dueAt = state.nextBillingAt ?? state.periodEnd;
+  return dueAt.getTime() <= now.getTime();
+}
+
 export function renewSubscription(state: SubscriptionState, now: Date, paid: boolean): EngineResult<undefined> {
   if (state.billingMode !== "RECURRING") {
     return { ok: false, code: "NOT_RECURRING", message: "This subscription does not renew." };
@@ -306,6 +317,9 @@ export function renewSubscription(state: SubscriptionState, now: Date, paid: boo
       event: "PAYMENT_FAILED",
       message: "Renewal payment failed",
     };
+  }
+  if (!renewalIsDue(state, now)) {
+    return { ok: false, code: "NOT_DUE", message: "This subscription is not due for renewal." };
   }
   const periodStart = state.periodEnd > now ? state.periodEnd : now;
   const periodEnd = addInterval(periodStart, state.intervalUnit, state.intervalCount);

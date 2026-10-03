@@ -24,6 +24,11 @@ echo "Generating the database client..."
 npx prisma generate
 echo "Applying migrations..."
 npx prisma migrate deploy
-echo "Seeding demo data..."
-npx tsx prisma/seed.ts
+# Development seeds. Production migrates and skips the demo seed unless SEED_DEMO=true.
+if [ "$NODE_ENV" = "production" ] && [ "$SEED_DEMO" != "true" ]; then
+  echo "Skipping demo seed."
+else
+  echo "Seeding demo data..."
+  npx tsx prisma/seed.ts
+fi
 exec "$@"

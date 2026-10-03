@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { calculatePrice, equivalentPrices } from "./pricing-service";
+import { evaluateCoupon, type CouponRecord } from "@/modules/coupons/coupon-service";
+import { calculatePrice, equivalentPrices, merchandiseSubtotalCents } from "./pricing-service";
 
 describe("pricing engine", () => {
   it("matches the published meal example", () => {
@@ -29,6 +30,50 @@ describe("pricing engine", () => {
       coupon: { type: "PERCENT", value: 150 },
     });
     expect(price.totalCents).toBe(0);
+  });
+
+  it("discounts merchandise only for a percentage coupon", () => {
+    const welcome: CouponRecord = {
+      code: "WELCOME10",
+      type: "PERCENT",
+      value: 10,
+      scope: "NEW_CUSTOMER",
+      planId: null,
+      categoryId: null,
+      minSubtotalCents: 0,
+      maxUses: null,
+      perCustomerLimit: 1,
+      startsAt: null,
+      endsAt: null,
+      active: true,
+    };
+    const merchandise = merchandiseSubtotalCents({
+      basePriceCents: 150_000,
+      variantDeltaCents: 20_000,
+      addonCents: 0,
+    });
+    const decision = evaluateCoupon(welcome, {
+      now: new Date("2026-10-02T00:00:00.000Z"),
+      subtotalCents: merchandise,
+      planId: "plan",
+      categoryId: null,
+      totalRedemptions: 0,
+      customerRedemptions: 0,
+      isNewCustomer: true,
+      isFirstSubscription: true,
+    });
+    const price = calculatePrice({
+      basePriceCents: 150_000,
+      variantDeltaCents: 20_000,
+      deliveryFeeCents: 20_000,
+      taxRateBps: 0,
+      coupon: { type: "PERCENT", value: 10 },
+    });
+    expect(merchandise).toBe(170_000);
+    expect(decision.ok && decision.amountCents).toBe(17_000);
+    expect(price.couponCents).toBe(17_000);
+    expect(price.deliveryFeeCents).toBe(20_000);
+    expect(price.totalCents).toBe(173_000);
   });
 
   it("computes daily, weekly, and monthly equivalents", () => {

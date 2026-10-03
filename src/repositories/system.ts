@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Prisma, type NotificationChannel, type RecordStatus } from "@/generated/prisma/client";
 import { prisma } from "@/database/client";
+import { visibleNotificationChannels } from "@/lib/notification-channels";
 import type { ListQuery } from "@/types/domain";
 import { iso, like, paging } from "./helpers";
 
@@ -208,15 +209,18 @@ export const system = {
     await prisma.notification.updateMany({ where: { id, userId }, data: { readAt: new Date() } });
   },
   async notify(userId: string, templateKey: string, title: string, body: string) {
+    const allowed = visibleNotificationChannels();
     const templates = await prisma.notificationTemplate.findMany({ where: { key: templateKey } });
-    const enabled = templates.filter((template) => template.enabled);
+    const enabled = templates.filter((template) => template.enabled && allowed.has(template.channel));
     const channels: NotificationChannel[] = enabled.length ? enabled.map((template) => template.channel) : ["IN_APP"];
     for (const channel of channels) {
       await prisma.notification.create({ data: { userId, channel, templateKey, title, body } });
     }
   },
   async templates() {
-    return prisma.notificationTemplate.findMany({ orderBy: [{ key: "asc" }, { channel: "asc" }] });
+    const allowed = visibleNotificationChannels();
+    const rows = await prisma.notificationTemplate.findMany({ orderBy: [{ key: "asc" }, { channel: "asc" }] });
+    return rows.filter((row) => allowed.has(row.channel));
   },
   async setTemplate(id: string, enabled: boolean) {
     return prisma.notificationTemplate.update({ where: { id }, data: { enabled } });

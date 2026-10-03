@@ -6,6 +6,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { toCsv, parseCsv } from "@/lib/csv";
 import { can } from "@/modules/auth/permissions";
 import { checkout, quoteSubscription } from "@/modules/checkout/checkout-service";
+import { runSubscriptionMaintenance } from "@/modules/subscriptions/jobs";
 import { actOnSubscription, publishPlan } from "@/modules/subscriptions/subscription-service";
 import { processWebhook } from "@/modules/webhooks/processor";
 import { billing } from "@/repositories/billing";
@@ -204,6 +205,10 @@ export async function handleApi(method: string, request: Request, slug: string[]
       return ok({ count: (body.ids ?? []).length });
     }
 
+    if (resource === "jobs" && id === "renewals" && method === "POST") {
+      requirePermission(user, "subscriptions.edit");
+      return ok(await runSubscriptionMaintenance());
+    }
     if (resource === "subscriptions" && method === "GET" && !id) {
       const actor = requireUser(user);
       const scoped = can(actor.permissions, "subscriptions.view", actor.role) ? query : { ...query, userId: actor.id };
@@ -508,19 +513,6 @@ export async function handleApi(method: string, request: Request, slug: string[]
       );
       if (!result.ok) throw new AppError(result.code, "Webhook signature could not be verified.", 401);
       return ok(result);
-    }
-    if (resource === "api-keys" && method === "GET") {
-      requirePermission(user, "api.manage");
-      return ok(await system.apiKeys());
-    }
-    if (resource === "api-keys" && method === "POST") {
-      const actor = requirePermission(user, "api.manage");
-      return ok(await system.createApiKey(body.name || "Integration", actor.id), 201);
-    }
-    if (resource === "api-keys" && id && method === "DELETE") {
-      requirePermission(user, "api.manage");
-      await system.revokeApiKey(id);
-      return ok({ revoked: true });
     }
     if (resource === "contact" && method === "POST") return ok(await system.contact(body), 201);
     if (resource === "exports" && id && method === "GET") {

@@ -27,7 +27,6 @@ const links = [
   ["Permissions", "/admin/permissions", "users.view"],
   ["Notifications", "/admin/notifications", "notifications.manage"],
   ["Integrations", "/admin/integrations", "api.manage"],
-  ["API", "/admin/api", "api.manage"],
   ["Settings", "/admin/settings", "settings.manage"],
   ["Audit logs", "/admin/audit", "audit.view"],
   ["System", "/admin/system", "settings.manage"],

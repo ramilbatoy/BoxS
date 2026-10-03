@@ -26,7 +26,6 @@ const modules: Record<string, { title: string; path: string; columns: string[]; 
   permissions: { title: "Permissions", path: "/api/v1/permissions", columns: ["description", "key", "module"] },
   notifications: { title: "Notification templates", path: "/api/v1/notifications/templates", columns: ["name", "channel", "enabled"] },
   integrations: { title: "Webhooks", path: "/api/v1/webhooks", columns: ["provider", "type", "status"] },
-  api: { title: "API keys", path: "/api/v1/api-keys", columns: ["name", "prefix", "revokedAt"] },
   settings: { title: "Settings", path: "/api/v1/settings", columns: ["group", "label", "value"] },
   system: { title: "System", path: "/api/v1/feature-flags", columns: ["key", "enabled", "description"] },
   audit: { title: "Audit logs", path: "/api/v1/audit-logs", columns: ["createdAt", "actorName", "action", "recordLabel"] },

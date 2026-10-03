@@ -8,6 +8,7 @@ import {
   changeDeliveryDate,
   changePlan,
   pauseSubscription,
+  renewalIsDue,
   renewSubscription,
   resumeSubscription,
   skipDelivery,
@@ -32,7 +33,74 @@ function toState(subscription: SubscriptionDTO): SubscriptionState {
     remainingDeliveries: subscription.remainingDeliveries,
     rules: subscription.rules,
     startedAt: new Date(subscription.startedAt),
+    pausedAt: subscription.pausedAt ? new Date(subscription.pausedAt) : null,
   };
+}
+
+export function renewalIdempotencyKey(subscriptionId: string, periodEndIso: string) {
+  return `renewal:${subscriptionId}:${periodEndIso}`;
+}
+
+export async function settleRenewal(input: {
+  id: string;
+  actorId?: string;
+  paymentProvider?: string;
+  now?: Date;
+}) {
+  const current = await billing.subscription(input.id);
+  if (!current) throw new AppError("SUBSCRIPTION_NOT_FOUND", "That subscription could not be found.", 404);
+  const now = input.now ?? new Date();
+  const state = toState(current);
+  if (!renewalIsDue(state, now)) return current;
+
+  const key = renewalIdempotencyKey(current.id, current.periodEnd);
+  const existing = await billing.orderByIdempotency(key);
+  let paid = existing?.payments.some((payment) => payment.status === "CAPTURED") ?? false;
+  if (!existing) {
+    ensurePaymentProviders();
+    const providerKey = input.paymentProvider || (await billing.latestCapturedProvider(current.id)) || "manual";
+    const charged = await getPaymentProvider(providerKey).createRecurringPayment({
+      amountCents: current.priceCents,
+      currency: current.currency,
+      customerId: current.customerId,
+      orderNumber: current.number,
+      description: `Renewal ${current.planName}`,
+    });
+    await billing.persistRenewal({
+      subscriptionId: current.id,
+      idempotencyKey: key,
+      payment: charged,
+    });
+    paid = charged.status === "CAPTURED";
+  }
+
+  const result = renewSubscription(state, now, paid);
+  if (!result.ok) {
+    if (result.code === "NOT_DUE") return current;
+    throw new AppError(result.code, result.message);
+  }
+  const saved = await billing.applyRenewal(
+    current.id,
+    state.periodEnd,
+    {
+      status: result.state.status,
+      periodStart: result.state.periodStart,
+      periodEnd: result.state.periodEnd,
+      nextBillingAt: result.state.nextBillingAt,
+    },
+    { type: result.event, message: result.message, actorId: input.actorId },
+  );
+  if (!saved) return current;
+  await system.notify(current.userId, result.event.toLowerCase(), result.message, `${current.number}: ${result.message}.`);
+  await system.writeAudit({
+    actorId: input.actorId,
+    action: result.event,
+    module: "subscriptions",
+    recordId: current.id,
+    recordLabel: current.number,
+    newValue: { status: result.state.status, periodEnd: result.state.periodEnd.toISOString() },
+  });
+  return saved;
 }
 
 export async function actOnSubscription(input: {
@@ -69,18 +137,7 @@ export async function actOnSubscription(input: {
     return finish(current, changeDeliveryDate(state, new Date(input.deliveryDate), now), input.actorId);
   }
   if (input.action === "renew") {
-    ensurePaymentProviders();
-    const provider = getPaymentProvider(input.paymentProvider || "manual");
-    const payment = await provider.createRecurringPayment({
-      amountCents: current.priceCents,
-      currency: current.currency,
-      customerId: current.customerId,
-      orderNumber: current.number,
-      description: `Renewal ${current.planName}`,
-    });
-    const result = renewSubscription(state, now, payment.status === "CAPTURED");
-    if (!result.ok) throw new AppError(result.code, result.message);
-    return finish(current, result, input.actorId);
+    return settleRenewal({ id: current.id, actorId: input.actorId, paymentProvider: input.paymentProvider, now });
   }
   if (input.action === "change_plan") {
     if (!input.planId) throw new AppError("PLAN_NOT_FOUND", "Choose a plan.");

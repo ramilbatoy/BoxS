@@ -30,6 +30,15 @@ export type PriceBreakdown = {
   lines: PriceLine[];
 };
 
+/** Merchandise a percentage coupon and its eligibility check both use. Delivery and tax are excluded. */
+export function merchandiseSubtotalCents(input: {
+  basePriceCents: number;
+  variantDeltaCents?: number;
+  addonCents?: number;
+}) {
+  return input.basePriceCents + (input.variantDeltaCents ?? 0) + (input.addonCents ?? 0);
+}
+
 export function couponAmount(preDiscountCents: number, coupon: CouponDraft) {
   if (coupon.type === "PERCENT") {
     return Math.round((preDiscountCents * coupon.value) / 100);
@@ -39,7 +48,7 @@ export function couponAmount(preDiscountCents: number, coupon: CouponDraft) {
 
 /**
  * Single pricing formula for storefront, plan builder, checkout, admin, orders, and renewals.
- * Base + variant + add-ons + delivery + tax - discounts - coupons.
+ * Percentage coupons discount merchandise only (base + options + add-ons).
  */
 export function calculatePrice(input: PriceInput): PriceBreakdown {
   const baseCents = input.basePriceCents;
@@ -48,11 +57,14 @@ export function calculatePrice(input: PriceInput): PriceBreakdown {
   const deliveryFeeCents = input.deliveryFeeCents ?? 0;
   const taxRateBps = input.taxRateBps ?? 0;
   const discountCents = input.discountCents ?? 0;
-  const preTax = baseCents + variantCents + addonCents + deliveryFeeCents;
+  const merchandiseCents = merchandiseSubtotalCents({ basePriceCents: baseCents, variantDeltaCents: variantCents, addonCents });
+  const preTax = merchandiseCents + deliveryFeeCents;
   const taxCents = Math.round((preTax * taxRateBps) / 10000);
   const beforeCoupon = preTax + taxCents - discountCents;
-  const rawCoupon = input.coupon ? couponAmount(Math.max(0, beforeCoupon), input.coupon) : 0;
-  const couponCents = Math.min(Math.max(0, rawCoupon), Math.max(0, beforeCoupon));
+  const couponBase = input.coupon?.type === "PERCENT" ? merchandiseCents : beforeCoupon;
+  const rawCoupon = input.coupon ? couponAmount(Math.max(0, couponBase), input.coupon) : 0;
+  const couponCap = input.coupon?.type === "PERCENT" ? Math.max(0, merchandiseCents) : Math.max(0, beforeCoupon);
+  const couponCents = Math.min(Math.max(0, rawCoupon), couponCap, Math.max(0, beforeCoupon));
   const totalCents = Math.max(0, beforeCoupon - couponCents);
 
   const lines: PriceLine[] = [

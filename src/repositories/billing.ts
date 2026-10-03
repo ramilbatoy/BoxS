@@ -47,6 +47,7 @@ export type SubscriptionDTO = {
   addressLabel: string | null;
   rules: SubscriptionRules;
   startedAt: string;
+  pausedAt: string | null;
   items: { id: string; kind: string; name: string; quantity: number; unitPriceCents: number }[];
   events: { id: string; type: string; message: string; createdAt: string }[];
 };
@@ -104,6 +105,7 @@ function mapSubscription(row: Prisma.SubscriptionGetPayload<{ include: typeof su
     addressLabel: row.address ? `${row.address.line1}, ${row.address.city}` : null,
     rules: row.rules as SubscriptionRules,
     startedAt: row.createdAt.toISOString(),
+    pausedAt: iso(row.pausedAt),
     items: row.items.map((item) => ({
       id: item.id,
       kind: item.kind,
@@ -593,5 +595,238 @@ export const billing = {
       }),
     ]);
     return this.subscription(id);
+  },
+  async dueRenewals(now: Date) {
+    const rows = await prisma.subscription.findMany({
+      where: {
+        billingMode: "RECURRING",
+        status: { in: ["ACTIVE", "PAST_DUE"] },
+        OR: [{ nextBillingAt: { lte: now } }, { nextBillingAt: null, periodEnd: { lte: now } }],
+      },
+      include: subscriptionInclude,
+      orderBy: { nextBillingAt: "asc" },
+      take: 50,
+    });
+    return rows.map(mapSubscription);
+  },
+  async latestCapturedProvider(subscriptionId: string) {
+    const payment = await prisma.payment.findFirst({
+      where: { subscriptionId, status: "CAPTURED" },
+      orderBy: { createdAt: "desc" },
+      select: { provider: true },
+    });
+    return payment?.provider ?? null;
+  },
+  async persistRenewal(input: {
+    subscriptionId: string;
+    idempotencyKey: string;
+    payment: { provider: string; status: PaymentStatus; externalId: string; amountCents: number; failureReason?: string };
+  }) {
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.order.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+        include: { payments: true },
+      });
+      if (existing) {
+        const alreadyCaptured = existing.payments.some((payment) => payment.status === "CAPTURED");
+        if (!alreadyCaptured) {
+          await tx.payment.create({
+            data: {
+              customerId: existing.customerId,
+              orderId: existing.id,
+              subscriptionId: input.subscriptionId,
+              provider: input.payment.provider,
+              status: input.payment.status,
+              amountCents: input.payment.amountCents,
+              currency: existing.currency,
+              externalId: input.payment.externalId,
+              failureReason: input.payment.failureReason,
+              transactions: {
+                create: { type: "capture", amountCents: input.payment.amountCents, status: input.payment.status },
+              },
+            },
+          });
+          if (input.payment.status === "CAPTURED") {
+            await tx.order.update({ where: { id: existing.id }, data: { status: "CONFIRMED" } });
+          }
+        }
+        return { orderId: existing.id, captured: alreadyCaptured || input.payment.status === "CAPTURED" };
+      }
+      const subscription = await tx.subscription.findUniqueOrThrow({
+        where: { id: input.subscriptionId },
+        include: { items: true, plan: true, orders: { orderBy: { placedAt: "desc" }, take: 1 } },
+      });
+      const quote =
+        subscription.priceSnapshot && typeof subscription.priceSnapshot === "object"
+          ? (subscription.priceSnapshot as Partial<PriceBreakdown>)
+          : {};
+      const orderNumber = await nextNumber(tx, "sequence.order", "BX");
+      const captured = input.payment.status === "CAPTURED";
+      const order = await tx.order.create({
+        data: {
+          number: orderNumber,
+          customerId: subscription.customerId,
+          subscriptionId: subscription.id,
+          status: captured ? "CONFIRMED" : "PENDING",
+          currency: subscription.currency,
+          subtotalCents: quote.baseCents ?? subscription.priceCents,
+          variantCents: quote.variantCents ?? 0,
+          addonCents: quote.addonCents ?? 0,
+          discountCents: quote.discountCents ?? 0,
+          couponCents: quote.couponCents ?? 0,
+          taxCents: quote.taxCents ?? 0,
+          deliveryFeeCents: quote.deliveryFeeCents ?? 0,
+          totalCents: subscription.priceCents,
+          notes: "Renewal",
+          addressSnapshot: (subscription.orders[0]?.addressSnapshot ?? {}) as Prisma.InputJsonValue,
+          idempotencyKey: input.idempotencyKey,
+          items: {
+            create: subscription.items.length
+              ? subscription.items.map((item) => ({
+                  name: item.name,
+                  quantity: item.quantity,
+                  unitPriceCents: item.unitPriceCents,
+                  totalCents: item.unitPriceCents * item.quantity,
+                }))
+              : [{
+                  name: subscription.plan.name,
+                  quantity: 1,
+                  unitPriceCents: subscription.priceCents,
+                  totalCents: subscription.priceCents,
+                }],
+          },
+          snapshot: {
+            create: {
+              payload: {
+                capturedAt: new Date().toISOString(),
+                kind: "renewal",
+                plan: { id: subscription.planId, name: subscription.plan.name },
+                totals: { totalCents: subscription.priceCents },
+              },
+            },
+          },
+          payments: {
+            create: {
+              customerId: subscription.customerId,
+              subscriptionId: subscription.id,
+              provider: input.payment.provider,
+              status: input.payment.status,
+              amountCents: input.payment.amountCents,
+              currency: subscription.currency,
+              externalId: input.payment.externalId,
+              failureReason: input.payment.failureReason,
+              transactions: {
+                create: { type: "capture", amountCents: input.payment.amountCents, status: input.payment.status },
+              },
+            },
+          },
+        },
+      });
+      return { orderId: order.id, captured };
+    });
+  },
+  async applyRenewal(
+    id: string,
+    expectedPeriodEnd: Date,
+    data: Prisma.SubscriptionUpdateInput,
+    event: { type: string; message: string; actorId?: string; payload?: unknown },
+  ) {
+    await prisma.$transaction(async (tx) => {
+      const current = await tx.subscription.findUnique({ where: { id }, select: { periodEnd: true } });
+      if (!current || current.periodEnd.getTime() !== expectedPeriodEnd.getTime()) return;
+      await tx.subscription.update({ where: { id }, data });
+      await tx.subscriptionEvent.create({
+        data: {
+          subscriptionId: id,
+          type: event.type,
+          message: event.message,
+          actorId: event.actorId,
+          payload: event.payload as Prisma.InputJsonValue,
+        },
+      });
+    });
+    return this.subscription(id);
+  },
+  async deliveryPrograms() {
+    const rows = await prisma.subscription.findMany({
+      where: { status: "ACTIVE" },
+      orderBy: { nextDeliveryAt: "asc" },
+      take: 100,
+      include: {
+        address: true,
+        orders: {
+          orderBy: { placedAt: "desc" },
+          include: { delivery: { include: { zone: { include: { schedules: true } } } } },
+        },
+      },
+    });
+    return rows.map((row) => {
+      const deliveries = row.orders
+        .flatMap((order) => (order.delivery ? [order.delivery] : []))
+        .sort((left, right) => left.deliveryDate.getTime() - right.deliveryDate.getTime());
+      const latest = deliveries[deliveries.length - 1];
+      const addressOrder = row.orders.find((order) => order.addressSnapshot);
+      const address = row.address;
+      return {
+        id: row.id,
+        customerId: row.customerId,
+        currency: row.currency,
+        status: row.status,
+        intervalUnit: row.intervalUnit,
+        intervalCount: row.intervalCount,
+        remainingDeliveries: row.remainingDeliveries,
+        periodStart: row.periodStart,
+        deliveryDates: deliveries.map((delivery) => delivery.deliveryDate),
+        deliveryDays: latest?.zone.schedules.filter((schedule) => schedule.active).map((schedule) => schedule.dayOfWeek) ?? [],
+        zoneId: latest?.zoneId ?? row.address?.zoneId ?? null,
+        scheduleId: latest?.scheduleId ?? null,
+        windowLabel: latest?.windowLabel ?? null,
+        addressSnapshot: addressOrder?.addressSnapshot ?? (address
+          ? { label: address.label, line1: address.line1, line2: address.line2, city: address.city, region: address.region, postalCode: address.postalCode }
+          : {}),
+      };
+    });
+  },
+  async createFollowUpDelivery(input: {
+    subscriptionId: string;
+    customerId: string;
+    currency: string;
+    deliveryDate: Date;
+    zoneId: string;
+    scheduleId: string | null;
+    windowLabel: string;
+    addressSnapshot: unknown;
+  }) {
+    const idempotencyKey = `delivery:${input.subscriptionId}:${input.deliveryDate.toISOString()}`;
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.order.findUnique({ where: { idempotencyKey } });
+      if (existing) return { created: false as const, orderId: existing.id };
+      const orderNumber = await nextNumber(tx, "sequence.order", "BX");
+      const order = await tx.order.create({
+        data: {
+          number: orderNumber,
+          customerId: input.customerId,
+          subscriptionId: input.subscriptionId,
+          status: "CONFIRMED",
+          currency: input.currency,
+          subtotalCents: 0,
+          totalCents: 0,
+          notes: "Scheduled delivery",
+          addressSnapshot: (input.addressSnapshot ?? {}) as Prisma.InputJsonValue,
+          idempotencyKey,
+          items: { create: [{ name: "Scheduled delivery", quantity: 1, unitPriceCents: 0, totalCents: 0 }] },
+          delivery: {
+            create: {
+              zoneId: input.zoneId,
+              scheduleId: input.scheduleId,
+              deliveryDate: input.deliveryDate,
+              windowLabel: input.windowLabel,
+              status: "CONFIRMED",
+            },
+          },
+        },
+      });
+      return { created: true as const, orderId: order.id };
+    });
   },
 };
