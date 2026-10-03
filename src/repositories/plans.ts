@@ -215,27 +215,32 @@ export const plans = {
         endsAt: input.endsAt ? new Date(input.endsAt) : null,
         ...rulesData(input.rules),
       };
+      // A child collection is replaced only when the caller sends it. An absent key leaves the
+      // existing rows alone, so a partial update cannot silently drop a plan's items or variants.
+      const replaceGroups = input.groups !== undefined;
+      const replaceItems = input.items !== undefined;
+      const replaceVariants = input.variants !== undefined;
       const plan = await prisma.$transaction(async (tx) => {
         const saved = id
           ? await tx.plan.update({ where: { id }, data })
           : await tx.plan.create({ data: { ...data, status: "DRAFT" } });
         if (id) {
-          await tx.planOptionGroup.deleteMany({ where: { planId: id } });
-          await tx.planItem.deleteMany({ where: { planId: id } });
-          await tx.planVariant.deleteMany({ where: { planId: id } });
+          if (replaceGroups) await tx.planOptionGroup.deleteMany({ where: { planId: id } });
+          if (replaceItems) await tx.planItem.deleteMany({ where: { planId: id } });
+          if (replaceVariants) await tx.planVariant.deleteMany({ where: { planId: id } });
         }
         const children = childData(input);
-        if (children.groups.create.length) {
+        if (replaceGroups && children.groups.create.length) {
           for (const group of children.groups.create) {
             await tx.planOptionGroup.create({ data: { ...group, planId: saved.id } });
           }
         }
-        if (children.items.create.length) {
+        if (replaceItems && children.items.create.length) {
           await tx.planItem.createMany({
             data: children.items.create.map((item) => ({ ...item, planId: saved.id })),
           });
         }
-        if (children.variants.create.length) {
+        if (replaceVariants && children.variants.create.length) {
           await tx.planVariant.createMany({
             data: children.variants.create.map((variant) => ({
               ...variant,
